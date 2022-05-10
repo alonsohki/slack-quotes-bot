@@ -1,0 +1,9 @@
+name: 'Slack quotes bot'
+description: 'Bot that sends random quotes to a Slack incoming webhook'
+inputs:
+  incoming-webhook:
+    description: 'Slack incoming webhook URL'
+    required: true
+runs:
+  using: 'node16'
+  main: 'index.js'
