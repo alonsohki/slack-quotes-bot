@@ -1,0 +1,25 @@
+{
+  "name": "slack-quotes-bot",
+  "version": "1.0.0",
+  "description": "Bot that sends random quotes to a Slack incoming webhook",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/alonsohki/slack-quotes-bot.git"
+  },
+  "keywords": [
+    "slack",
+    "bot",
+    "random",
+    "quotes"
+  ],
+  "author": "Alberto Alonso <alberto@alonso.xyz>",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/alonsohki/slack-quotes-bot/issues"
+  },
+  "homepage": "https://github.com/alonsohki/slack-quotes-bot#readme"
+}
