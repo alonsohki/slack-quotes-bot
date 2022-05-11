@@ -13,9 +13,11 @@ const getRandomQuote = async (url) => {
   try {
     const url = core.getInput('incoming-webhook');
     const quotesUrl = core.getInput('quotes-url') || 'https://your-fortune.github.io/data/murphys-law.json';
+    const messageFormat = core.getInput('message-format') || '%quote%';
     
     const webhook = new IncomingWebhook(url);
-    webhook.send(await getRandomQuote(quotesUrl));
+    const quote = await getRandomQuote(quotesUrl);
+    webhook.send(messageFormat.replaceAll('%quote%', quote));
   } catch (error) {
     core.setFailed(error.message);
   }
