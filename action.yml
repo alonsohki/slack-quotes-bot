@@ -4,6 +4,14 @@ inputs:
   incoming-webhook:
     description: 'Slack incoming webhook URL'
     required: true
+  quotes-url:
+    description: 'URL to get the quotes from'
+    required: false
+    default: 'https://your-fortune.github.io/data/murphys-law.json'
+  message-format:
+    description: 'Format of the message to be sent to Slack, where a %quote% string is replaced by the actual quote'
+    required: false
+    default: '%quote%'
 runs:
   using: 'node16'
   main: 'dist/index.js'
