@@ -1,5 +1,8 @@
 name: 'Slack quotes bot'
 description: 'Bot that sends random quotes to a Slack incoming webhook'
+branding:
+  icon: align-left
+  color: blue
 inputs:
   incoming-webhook:
     description: 'Slack incoming webhook URL'
