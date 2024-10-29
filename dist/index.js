@@ -8067,6 +8067,288 @@ CombinedStream.prototype._emitError = function(err) {
 
 /***/ }),
 
+/***/ 5149:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const { Transform } = __nccwpck_require__(2781)
+
+const [cr] = Buffer.from('\r')
+const [nl] = Buffer.from('\n')
+const defaults = {
+  escape: '"',
+  headers: null,
+  mapHeaders: ({ header }) => header,
+  mapValues: ({ value }) => value,
+  newline: '\n',
+  quote: '"',
+  raw: false,
+  separator: ',',
+  skipComments: false,
+  skipLines: null,
+  maxRowBytes: Number.MAX_SAFE_INTEGER,
+  strict: false
+}
+
+class CsvParser extends Transform {
+  constructor (opts = {}) {
+    super({ objectMode: true, highWaterMark: 16 })
+
+    if (Array.isArray(opts)) opts = { headers: opts }
+
+    const options = Object.assign({}, defaults, opts)
+
+    options.customNewline = options.newline !== defaults.newline
+
+    for (const key of ['newline', 'quote', 'separator']) {
+      if (typeof options[key] !== 'undefined') {
+        ([options[key]] = Buffer.from(options[key]))
+      }
+    }
+
+    // if escape is not defined on the passed options, use the end value of quote
+    options.escape = (opts || {}).escape ? Buffer.from(options.escape)[0] : options.quote
+
+    this.state = {
+      empty: options.raw ? Buffer.alloc(0) : '',
+      escaped: false,
+      first: true,
+      lineNumber: 0,
+      previousEnd: 0,
+      rowLength: 0,
+      quoted: false
+    }
+
+    this._prev = null
+
+    if (options.headers === false) {
+      // enforce, as the column length check will fail if headers:false
+      options.strict = false
+    }
+
+    if (options.headers || options.headers === false) {
+      this.state.first = false
+    }
+
+    this.options = options
+    this.headers = options.headers
+  }
+
+  parseCell (buffer, start, end) {
+    const { escape, quote } = this.options
+    // remove quotes from quoted cells
+    if (buffer[start] === quote && buffer[end - 1] === quote) {
+      start++
+      end--
+    }
+
+    let y = start
+
+    for (let i = start; i < end; i++) {
+      // check for escape characters and skip them
+      if (buffer[i] === escape && i + 1 < end && buffer[i + 1] === quote) {
+        i++
+      }
+
+      if (y !== i) {
+        buffer[y] = buffer[i]
+      }
+      y++
+    }
+
+    return this.parseValue(buffer, start, y)
+  }
+
+  parseLine (buffer, start, end) {
+    const { customNewline, escape, mapHeaders, mapValues, quote, separator, skipComments, skipLines } = this.options
+
+    end-- // trim newline
+    if (!customNewline && buffer.length && buffer[end - 1] === cr) {
+      end--
+    }
+
+    const comma = separator
+    const cells = []
+    let isQuoted = false
+    let offset = start
+
+    if (skipComments) {
+      const char = typeof skipComments === 'string' ? skipComments : '#'
+      if (buffer[start] === Buffer.from(char)[0]) {
+        return
+      }
+    }
+
+    const mapValue = (value) => {
+      if (this.state.first) {
+        return value
+      }
+
+      const index = cells.length
+      const header = this.headers[index]
+
+      return mapValues({ header, index, value })
+    }
+
+    for (let i = start; i < end; i++) {
+      const isStartingQuote = !isQuoted && buffer[i] === quote
+      const isEndingQuote = isQuoted && buffer[i] === quote && i + 1 <= end && buffer[i + 1] === comma
+      const isEscape = isQuoted && buffer[i] === escape && i + 1 < end && buffer[i + 1] === quote
+
+      if (isStartingQuote || isEndingQuote) {
+        isQuoted = !isQuoted
+        continue
+      } else if (isEscape) {
+        i++
+        continue
+      }
+
+      if (buffer[i] === comma && !isQuoted) {
+        let value = this.parseCell(buffer, offset, i)
+        value = mapValue(value)
+        cells.push(value)
+        offset = i + 1
+      }
+    }
+
+    if (offset < end) {
+      let value = this.parseCell(buffer, offset, end)
+      value = mapValue(value)
+      cells.push(value)
+    }
+
+    if (buffer[end - 1] === comma) {
+      cells.push(mapValue(this.state.empty))
+    }
+
+    const skip = skipLines && skipLines > this.state.lineNumber
+    this.state.lineNumber++
+
+    if (this.state.first && !skip) {
+      this.state.first = false
+      this.headers = cells.map((header, index) => mapHeaders({ header, index }))
+
+      this.emit('headers', this.headers)
+      return
+    }
+
+    if (!skip && this.options.strict && cells.length !== this.headers.length) {
+      const e = new RangeError('Row length does not match headers')
+      this.emit('error', e)
+    } else {
+      if (!skip) this.writeRow(cells)
+    }
+  }
+
+  parseValue (buffer, start, end) {
+    if (this.options.raw) {
+      return buffer.slice(start, end)
+    }
+
+    return buffer.toString('utf-8', start, end)
+  }
+
+  writeRow (cells) {
+    const headers = (this.headers === false) ? cells.map((value, index) => index) : this.headers
+
+    const row = cells.reduce((o, cell, index) => {
+      const header = headers[index]
+      if (header === null) return o // skip columns
+      if (header !== undefined) {
+        o[header] = cell
+      } else {
+        o[`_${index}`] = cell
+      }
+      return o
+    }, {})
+
+    this.push(row)
+  }
+
+  _flush (cb) {
+    if (this.state.escaped || !this._prev) return cb()
+    this.parseLine(this._prev, this.state.previousEnd, this._prev.length + 1) // plus since online -1s
+    cb()
+  }
+
+  _transform (data, enc, cb) {
+    if (typeof data === 'string') {
+      data = Buffer.from(data)
+    }
+
+    const { escape, quote } = this.options
+    let start = 0
+    let buffer = data
+
+    if (this._prev) {
+      start = this._prev.length
+      buffer = Buffer.concat([this._prev, data])
+      this._prev = null
+    }
+
+    const bufferLength = buffer.length
+
+    for (let i = start; i < bufferLength; i++) {
+      const chr = buffer[i]
+      const nextChr = i + 1 < bufferLength ? buffer[i + 1] : null
+
+      this.state.rowLength++
+      if (this.state.rowLength > this.options.maxRowBytes) {
+        return cb(new Error('Row exceeds the maximum size'))
+      }
+
+      if (!this.state.escaped && chr === escape && nextChr === quote && i !== start) {
+        this.state.escaped = true
+        continue
+      } else if (chr === quote) {
+        if (this.state.escaped) {
+          this.state.escaped = false
+          // non-escaped quote (quoting the cell)
+        } else {
+          this.state.quoted = !this.state.quoted
+        }
+        continue
+      }
+
+      if (!this.state.quoted) {
+        if (this.state.first && !this.options.customNewline) {
+          if (chr === nl) {
+            this.options.newline = nl
+          } else if (chr === cr) {
+            if (nextChr !== nl) {
+              this.options.newline = cr
+            }
+          }
+        }
+
+        if (chr === this.options.newline) {
+          this.parseLine(buffer, this.state.previousEnd, i + 1)
+          this.state.previousEnd = i + 1
+          this.state.rowLength = 0
+        }
+      }
+    }
+
+    if (this.state.previousEnd === bufferLength) {
+      this.state.previousEnd = 0
+      return cb()
+    }
+
+    if (bufferLength - this.state.previousEnd < data.length) {
+      this._prev = data
+      this.state.previousEnd -= (bufferLength - data.length)
+      return cb()
+    }
+
+    this._prev = buffer
+    cb()
+  }
+}
+
+module.exports = (opts) => new CsvParser(opts)
+
+
+/***/ }),
+
 /***/ 8611:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -9410,6 +9692,183 @@ module.exports = require("zlib");
 
 /***/ }),
 
+/***/ 7263:
+/***/ ((module) => {
+
+"use strict";
+
+
+const NullObject = function NullObject () { }
+NullObject.prototype = Object.create(null)
+
+/**
+ * RegExp to match *( ";" parameter ) in RFC 7231 sec 3.1.1.1
+ *
+ * parameter     = token "=" ( token / quoted-string )
+ * token         = 1*tchar
+ * tchar         = "!" / "#" / "$" / "%" / "&" / "'" / "*"
+ *               / "+" / "-" / "." / "^" / "_" / "`" / "|" / "~"
+ *               / DIGIT / ALPHA
+ *               ; any VCHAR, except delimiters
+ * quoted-string = DQUOTE *( qdtext / quoted-pair ) DQUOTE
+ * qdtext        = HTAB / SP / %x21 / %x23-5B / %x5D-7E / obs-text
+ * obs-text      = %x80-FF
+ * quoted-pair   = "\" ( HTAB / SP / VCHAR / obs-text )
+ */
+const paramRE = /; *([!#$%&'*+.^\w`|~-]+)=("(?:[\v\u0020\u0021\u0023-\u005b\u005d-\u007e\u0080-\u00ff]|\\[\v\u0020-\u00ff])*"|[!#$%&'*+.^\w`|~-]+) */gu
+
+/**
+ * RegExp to match quoted-pair in RFC 7230 sec 3.2.6
+ *
+ * quoted-pair = "\" ( HTAB / SP / VCHAR / obs-text )
+ * obs-text    = %x80-FF
+ */
+const quotedPairRE = /\\([\v\u0020-\u00ff])/gu
+
+/**
+ * RegExp to match type in RFC 7231 sec 3.1.1.1
+ *
+ * media-type = type "/" subtype
+ * type       = token
+ * subtype    = token
+ */
+const mediaTypeRE = /^[!#$%&'*+.^\w|~-]+\/[!#$%&'*+.^\w|~-]+$/u
+
+// default ContentType to prevent repeated object creation
+const defaultContentType = { type: '', parameters: new NullObject() }
+Object.freeze(defaultContentType.parameters)
+Object.freeze(defaultContentType)
+
+/**
+ * Parse media type to object.
+ *
+ * @param {string|object} header
+ * @return {Object}
+ * @public
+ */
+
+function parse (header) {
+  if (typeof header !== 'string') {
+    throw new TypeError('argument header is required and must be a string')
+  }
+
+  let index = header.indexOf(';')
+  const type = index !== -1
+    ? header.slice(0, index).trim()
+    : header.trim()
+
+  if (mediaTypeRE.test(type) === false) {
+    throw new TypeError('invalid media type')
+  }
+
+  const result = {
+    type: type.toLowerCase(),
+    parameters: new NullObject()
+  }
+
+  // parse parameters
+  if (index === -1) {
+    return result
+  }
+
+  let key
+  let match
+  let value
+
+  paramRE.lastIndex = index
+
+  while ((match = paramRE.exec(header))) {
+    if (match.index !== index) {
+      throw new TypeError('invalid parameter format')
+    }
+
+    index += match[0].length
+    key = match[1].toLowerCase()
+    value = match[2]
+
+    if (value[0] === '"') {
+      // remove quotes and escapes
+      value = value
+        .slice(1, value.length - 1)
+
+      quotedPairRE.test(value) && (value = value.replace(quotedPairRE, '$1'))
+    }
+
+    result.parameters[key] = value
+  }
+
+  if (index !== header.length) {
+    throw new TypeError('invalid parameter format')
+  }
+
+  return result
+}
+
+function safeParse (header) {
+  if (typeof header !== 'string') {
+    return defaultContentType
+  }
+
+  let index = header.indexOf(';')
+  const type = index !== -1
+    ? header.slice(0, index).trim()
+    : header.trim()
+
+  if (mediaTypeRE.test(type) === false) {
+    return defaultContentType
+  }
+
+  const result = {
+    type: type.toLowerCase(),
+    parameters: new NullObject()
+  }
+
+  // parse parameters
+  if (index === -1) {
+    return result
+  }
+
+  let key
+  let match
+  let value
+
+  paramRE.lastIndex = index
+
+  while ((match = paramRE.exec(header))) {
+    if (match.index !== index) {
+      return defaultContentType
+    }
+
+    index += match[0].length
+    key = match[1].toLowerCase()
+    value = match[2]
+
+    if (value[0] === '"') {
+      // remove quotes and escapes
+      value = value
+        .slice(1, value.length - 1)
+
+      quotedPairRE.test(value) && (value = value.replace(quotedPairRE, '$1'))
+    }
+
+    result.parameters[key] = value
+  }
+
+  if (index !== header.length) {
+    return defaultContentType
+  }
+
+  return result
+}
+
+module.exports["default"] = { parse, safeParse }
+module.exports.parse = parse
+module.exports.safeParse = safeParse
+module.exports.defaultContentType = defaultContentType
+
+
+/***/ }),
+
 /***/ 5696:
 /***/ ((module) => {
 
@@ -9478,19 +9937,54 @@ var __webpack_exports__ = {};
 const { IncomingWebhook } = __nccwpck_require__(1095);
 const core = __nccwpck_require__(2186);
 const axios = (__nccwpck_require__(6545)["default"]);
+const path = __nccwpck_require__(1017);
+const csv = __nccwpck_require__(5149);
+const fastContentTypeParse = __nccwpck_require__(7263);
+const { PassThrough } = __nccwpck_require__(2781);
+
+const inferContentTypeFromExt = (url) => {
+  switch (path.extname(url)) {
+    case '.csv': return 'text/csv';
+    case '.json':
+    default:
+      return 'application/json';
+  }
+}
+
+const getQuoteArray = async (data, contentType) => {
+  switch (contentType) {
+    case 'application/json':
+      return data.data.map(({quote}) => quote);
+    case 'text/csv':
+      return new Promise((res) => {
+        const passthru = new PassThrough();
+        const results = [];
+        passthru
+          .pipe(csv())
+          .on('data', ({quote}) => results.push(quote))
+          .on('end', () => res(results))
+        ;
+        passthru.push(data);
+        passthru.end();
+      });
+    default:
+      throw new Error(`Unknown content type ${contentType}`);
+  }
+}
 
 const getRandomQuote = async (url) => {
   const res = await axios.get(url);
-  const quotes = res.data.data;
+  const contentType = res.headers['content-type'] || inferContentTypeFromExt(res.config.url);
+  const quotes = await getQuoteArray(res.data, fastContentTypeParse.parse(contentType).type);
   const n = Math.floor(Math.random() * quotes.length);
-  return quotes[n].quote;
+  return quotes[n];
 }
 
 (async() => {
   try {
-    const url = core.getInput('incoming-webhook');
-    const quotesUrl = core.getInput('quotes-url') || 'https://your-fortune.github.io/data/murphys-law.json';
-    const messageFormat = core.getInput('message-format') || '%quote%';
+    const url = process.env.INCOMING_WEBHOOK || core.getInput('incoming-webhook');
+    const quotesUrl = process.env.QUOTES_URL || core.getInput('quotes-url') || 'https://your-fortune.github.io/data/murphys-law.json';
+    const messageFormat = process.env.MESSAGE_FORMAT || core.getInput('message-format') || '%quote%';
     
     const webhook = new IncomingWebhook(url);
     const quote = await getRandomQuote(quotesUrl);
